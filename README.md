@@ -1,5 +1,7 @@
 # 滴滴去广告 + 界面简化（LSPosed 模块）
 
+<img src="assets/icon-512.png" width="96" alt="模块图标">
+
 针对 **滴滴出行（`com.sdu.didi.psnger`）** 的 LSPosed 模块：**去广告** + **首页界面简化**，并带一个**按页面分类**的设置页 —— 每个开关都写明「对应页面」，一眼知道它改的是哪个界面。
 
 - 框架：LSPosed（libxposed **API 102**，`minApiVersion=101` `targetApiVersion=102`）
