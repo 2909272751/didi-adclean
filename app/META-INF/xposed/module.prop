@@ -1,0 +1,11 @@
+minApiVersion=101
+targetApiVersion=102
+staticScope=true
+exceptionMode=protective
+autoHotReload=false
+id=io.github.didiadclean
+name=DiDi Ad Clean
+version=0.3.0
+versionCode=3
+author=Codex
+description=DiDi (com.sdu.didi.psnger) ad cleaner: master gate / popup / splash, per-feature switches with status page.

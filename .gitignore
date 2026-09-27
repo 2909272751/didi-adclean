@@ -1,0 +1,13 @@
+# 构建产物
+app/dist/
+app/build/
+*.class
+*.dex
+*.apk
+
+# 本地测试签名（不要提交）
+app/debug.keystore
+
+# 临时
+*.log
+temp/

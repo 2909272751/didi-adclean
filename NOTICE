@@ -1,0 +1,9 @@
+本模块依赖
+==========
+
+1) LSPosed service-classes.jar（io.github.libxposed.service.*）
+   来源：LSPosed（https://github.com/LSPosed/LSPosed）
+   许可证：Apache License 2.0（全文见 app/META-INF/licenses/Apache-2.0.txt）
+   用途：设置页通过 XposedService 读写 RemotePreferences。
+
+除上述外，本模块不含任何第三方库；全部业务代码为本项目原创。

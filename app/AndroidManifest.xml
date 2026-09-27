@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.github.didiadclean"
+    android:versionCode="6"
+    android:versionName="0.6.0">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
+    <queries><package android:name="com.sdu.didi.psnger" /></queries>
+    <application
+        android:name=".App"
+        android:label="滴滴去广告"
+        android:icon="@drawable/ic_launcher"
+        android:description="@string/description"
+        android:usesCleartextTraffic="false">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <provider
+            android:name="io.github.libxposed.service.XposedProvider"
+            android:authorities="io.github.didiadclean.XposedService"
+            android:exported="true" />
+        <provider
+            android:name=".StatusProvider"
+            android:authorities="io.github.didiadclean.status"
+            android:exported="true" />
+        <receiver android:name=".StatusReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="io.github.didiadclean.REPORT" />
+                <action android:name="io.github.didiadclean.COMPAT_REPORT" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
