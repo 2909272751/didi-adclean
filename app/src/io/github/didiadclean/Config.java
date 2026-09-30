@@ -9,7 +9,7 @@ public final class Config {
     public static final String PACKAGE = "com.sdu.didi.psnger";
     public static final String TAG = "DiDiAdClean";
     /** 规则结构版本；改动语义时 +1（日志里带 schema，区分「没生效」和「没加载」）。 */
-    public static final int REPORT_SCHEMA = 5;
+    public static final int REPORT_SCHEMA = 6;
     /** RemotePreferences 组名：设置页写、被 hook 进程读，两端必须一致。 */
     public static final String GROUP = "didiclean";
     public static final String STATUS_FILE = "compatibility_status";
@@ -33,6 +33,7 @@ public final class Config {
             "no_ads",            // 全局
             "popup",             // 广告
             "splash",            // 广告
+            "push_notify",       // 广告（推送通知）
             "block_dialogs",     // 广告（通用弹窗，默认关）
             "hide_promo_card",   // 首页
             "hide_home_banner",  // 首页
@@ -47,6 +48,7 @@ public final class Config {
             "广告总闸（弹窗 / 通知 / 开屏展示）",
             "广告弹窗 · 通知（只拦广告，正常弹窗保留）",
             "开屏广告",
+            "推送通知广告（按渠道 + 广告词判定，只拦广告通知）",
             "⚠ 通用弹窗全拦（默认关：会连正常提示一起拦）",
             "首页营销卡片 / 营销横幅",
             "首页底部营销专区",
@@ -62,6 +64,7 @@ public final class Config {
             "全局 · 所有广告位",
             "任意页 · 弹窗浮层 / 通知（只拦广告 SDK 的弹窗）",
             "启动页 · 冷启动开屏",
+            "通知栏 · 推送下发的广告通知（行程/接单等正常通知保留）",
             "任意页 · DiDi 自有弹窗（活动/营销/提示都走这里，谨慎开启）",
             "首页 · 顶部智能卡片（如“宠物出行 打车最高减10元”）",
             "首页 · 最下方“一个滴滴，畅行全城”推广区",
@@ -76,6 +79,7 @@ public final class Config {
             "把广告 SDK 置为“未就绪”，广告展示路径自然退出。实测命中 AdSdk.d(AdRequest)",
             "拦截 PopRequest / NotifyRequest（按方法名挂，跨版本稳）",
             "不运行开屏展示流程、不接受开屏资源（布防中，待开屏库存命中）",
+            "拦 NotificationManager.notify 这个唯一出口：先判渠道 id/名，再判标题与正文广告词。命中即不下发，正常通知原样放行；判据表见 NotifyGate",
             "拦截 com.didi.sdk.view.dialog.b.show()：滴滴自有弹窗组件的统一出口。**默认关闭**——它也会承载确认/安全类弹窗，开了会连正常弹窗一起拦",
             "隐藏 v8_smart_card_container / home_main_card_activity_image",
             "隐藏 home_banner_proxy_view / ch_banner_casper_container",
@@ -87,10 +91,10 @@ public final class Config {
             "只读探针：只打 hit 日志、原样放行，用于确认真实调用链",
     };
     public static final String[] FEATURE_CATEGORY = {
-            "global", "ad", "ad", "ad", "home", "home", "home", "home", "home", "home", "home", "diagnostic",
+            "global", "ad", "ad", "ad", "ad", "home", "home", "home", "home", "home", "home", "home", "diagnostic",
     };
     public static final boolean[] FEATURE_DEFAULTS = {
-            true, true, true, false, true, true, false, false, true, true, false, true,
+            true, true, true, true, false, true, true, false, false, true, true, false, true,
     };
 
     /** 探针目标类（非混淆类名，方法名被 R8 混淆 → 按名字/形状挂）。 */

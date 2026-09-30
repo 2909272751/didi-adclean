@@ -5,15 +5,58 @@ $ErrorActionPreference = 'Stop'
 # javac -> d8 -> aapt2 -> zipalign -> apksigner. No native libs, no third-party jars.
 
 $app = $PSScriptRoot
-$sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } elseif ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT } else { 'C:\AndroidSdk' }
-$jdk = if ($env:JAVA_HOME) { $env:JAVA_HOME } else { 'C:\Users\29092\AppData\Local\Programs\jdk17' }
-$tools = Join-Path $sdk 'build-tools\35.0.0'
-$androidJarSource = Join-Path $sdk 'platforms\android-35\android.jar'
+# Toolchain autodetection. ASCII only on purpose: Windows PowerShell 5.1 decodes a
+# .ps1 without a UTF-8 BOM as ANSI/GBK, and stray non-ASCII bytes can break parsing.
+# Override with $env:DAC_SDK / $env:DAC_JDK.
+$workspace = Split-Path $app -Parent | Split-Path -Parent
+$sdkCandidates = @(@($env:DAC_SDK, $env:ANDROID_SDK, $env:ANDROID_HOME, $env:ANDROID_SDK_ROOT,
+                   (Join-Path $workspace '.android_build_tools\android-sdk'),
+                   'C:\Android\Sdk', (Join-Path $env:LOCALAPPDATA 'Android\Sdk')) |
+               Where-Object { $_ -and (Test-Path (Join-Path $_ 'platforms')) } | Select-Object -Unique)
+if ($sdkCandidates.Count -eq 0) { throw 'Android SDK not found. Set $env:DAC_SDK.' }
+$sdk = $sdkCandidates[0]
+# Newest platform / build-tools that is actually usable, so the build is not pinned
+# to one SDK image. 'android-34-2'-style side installs are ignored on purpose.
+$platforms = @(Get-ChildItem -LiteralPath (Join-Path $sdk 'platforms') -Directory |
+    Where-Object { $_.Name -match '^android-\d+$' -and (Test-Path (Join-Path $_.FullName 'android.jar')) } |
+    Sort-Object { [int]($_.Name -replace '\D', '') } -Descending)
+if ($platforms.Count -eq 0) { throw "No usable platform (android.jar) under $sdk\platforms" }
+$platform = $platforms[0].Name
+$buildTools = @(Get-ChildItem -LiteralPath (Join-Path $sdk 'build-tools') -Directory |
+    Where-Object { (Test-Path (Join-Path $_.FullName 'aapt2.exe')) -and (Test-Path (Join-Path $_.FullName 'apksigner.bat')) } |
+    Sort-Object { [version]($_.Name) } -Descending)
+if ($buildTools.Count -eq 0) { throw "No usable build-tools under $sdk\build-tools" }
+$tools = $buildTools[0].FullName
+$androidJarSource = Join-Path $sdk "platforms\$platform\android.jar"
+$jdkCandidates = @(@($env:DAC_JDK, $env:JAVA_HOME, (Join-Path $workspace '.android_build_tools\jdk17'),
+                   'C:\Program Files\AdoptOpenJDK\jdk-17.0.0.20-hotspot') |
+                 Where-Object { $_ -and (Test-Path (Join-Path $_ 'bin\javac.exe')) } | Select-Object -Unique)
+if ($jdkCandidates.Count -eq 0) { throw 'JDK 17 not found. Set $env:DAC_JDK.' }
+$jdk = $jdkCandidates[0]
+Write-Host "sdk         : $sdk (platform $platform)"
+Write-Host "build-tools : $tools"
+Write-Host "jdk         : $jdk"
 $javac = Join-Path $jdk 'bin\javac.exe'
+$java = Join-Path $jdk 'bin\java.exe'
 $jar = Join-Path $jdk 'bin\jar.exe'
 $keytool = Join-Path $jdk 'bin\keytool.exe'
 $aapt2 = Join-Path $tools 'aapt2.exe'
-$d8 = Join-Path $tools 'd8.bat'
+# Some build-tools installs ship a d8.bat whose d8.jar is missing (34.0.0 here has
+# lib\apksigner.jar only), and d8.bat then runs a classpath that does not exist and
+# dies with a bare ClassNotFoundException. Resolve the D8 jar explicitly instead.
+# Order matters: an explicit R8_JAR wins, then a standalone modern r8-<ver>.jar under
+# <sdk>\d8, and only then whatever d8.jar the SDK ships. The d8.jar bundled with old
+# build-tools (R8 3.3.20) dies here with "Cannot invoke String.length() because
+# <parameter1> is null" while dexing, so it must be the last resort, not the first.
+$d8Candidates = @()
+if ($env:R8_JAR) { $d8Candidates += $env:R8_JAR }
+$d8Candidates += @(Get-ChildItem -LiteralPath (Join-Path $sdk 'd8') -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like 'r8-*.jar' } | Sort-Object Name -Descending | ForEach-Object FullName)
+$d8Candidates += @(Get-ChildItem -LiteralPath (Join-Path $sdk 'build-tools') -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq 'd8.jar' } | ForEach-Object FullName)
+$d8Jar = $d8Candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+if (-not $d8Jar) { throw "No D8 jar found. Set `$env:R8_JAR to a com.android.tools:r8 jar from dl.google.com/dl/android/maven2." }
+Write-Host "d8          : $d8Jar"
 $zipalign = Join-Path $tools 'zipalign.exe'
 $apksigner = Join-Path $tools 'apksigner.bat'
 
@@ -26,7 +69,7 @@ $output = Join-Path $dist ("didi-adclean-v{0}.apk" -f $version)
 $env:JAVA_HOME = $jdk
 $env:Path = (Join-Path $jdk 'bin') + ';' + $env:Path
 
-foreach ($needed in @($androidJarSource, $javac, $jar, $aapt2, $d8, $zipalign, $apksigner)) {
+foreach ($needed in @($androidJarSource, $javac, $java, $jar, $keytool, $aapt2, $d8Jar, $zipalign, $apksigner)) {
     if (-not (Test-Path -LiteralPath $needed)) { throw "Build tool missing: $needed" }
 }
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
@@ -46,9 +89,18 @@ function Run-Native([string]$name, [scriptblock]$action) {
     if ($LASTEXITCODE -ne 0) { throw "$name failed with exit code $LASTEXITCODE" }
 }
 
+function Get-FilesByExtension([string]$dir, [string]$ext, [switch]$Recurse) {
+    # Deliberately not using Get-ChildItem -Filter here: the workspace path contains
+    # non-ASCII characters, and PS 5.1 was observed returning 0 matches intermittently
+    # for the same directory, which would silently skip every source file.
+    if (-not (Test-Path -LiteralPath $dir)) { return @() }
+    $items = if ($Recurse) { Get-ChildItem -LiteralPath $dir -Recurse -File } else { Get-ChildItem -LiteralPath $dir -File }
+    return @($items | Where-Object { $_.Extension -eq $ext } | ForEach-Object FullName)
+}
+
 try {
-    $stubs = @(Get-ChildItem -LiteralPath (Join-Path $stage 'stub-src') -Recurse -Filter '*.java' | ForEach-Object FullName)
-    $sources = @(Get-ChildItem -LiteralPath (Join-Path $stage 'src') -Recurse -Filter '*.java' | ForEach-Object FullName)
+    $stubs = Get-FilesByExtension (Join-Path $stage 'stub-src') '.java' -Recurse
+    $sources = Get-FilesByExtension (Join-Path $stage 'src') '.java' -Recurse
     Write-Host 'Compiling API stubs and module'
     Run-Native 'API stub compilation' { & $javac -encoding UTF-8 -nowarn -source 8 -target 8 -bootclasspath $androidJar -d (Join-Path $stage 'stubs') @stubs }
     $serviceJar = Join-Path $stage 'libs\service-classes.jar'
@@ -59,7 +111,7 @@ try {
     Run-Native 'JAR creation' { & $jar -cf $classesJar -C (Join-Path $stage 'classes') . }
     $dexInputs = @($classesJar)
     if (Test-Path -LiteralPath $serviceJar) { $dexInputs += $serviceJar }
-    Run-Native 'DEX conversion' { & $d8 --min-api 26 --lib $androidJar --output (Join-Path $stage 'dex') @dexInputs }
+    Run-Native 'DEX conversion' { & $java -Xmx3072M -cp $d8Jar com.android.tools.r8.D8 --min-api 26 --lib $androidJar --output (Join-Path $stage 'dex') @dexInputs }
 
     Write-Host 'Packaging Android resources'
     $compiledRes = Join-Path $stage 'resources.zip'

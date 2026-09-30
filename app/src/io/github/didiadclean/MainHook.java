@@ -1,6 +1,9 @@
 package io.github.didiadclean;
 
 import android.app.Application;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
@@ -32,6 +35,12 @@ public final class MainHook extends XposedModule {
     private volatile String processName;
     private volatile String compatDetail;
     private volatile boolean compatOk;
+    /** 装上了但只覆盖部分入口的特性 → 报 partial，不许被 max 成 matched。 */
+    private volatile String partialKey;
+    private volatile String partialWhy;
+    /** 想在设置页展示的附加说明（目前只有通知闸门的判定自检）。 */
+    private volatile String detailKey;
+    private volatile String detailExtra;
 
     @Override
     public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam param) {
@@ -146,6 +155,11 @@ public final class MainHook extends XposedModule {
             @Override public void install() {
                 gateByName(splashShow, "f", "splash", "QuickSplashShow.f");
                 gateByName(splashShow, "c", "splash", "QuickSplashShow.c");
+            }
+        });
+        feature("push_notify", prefsRef, new Installer() {
+            @Override public void install() {
+                installPushNotify();
             }
         });
         feature("block_dialogs", prefsRef, new Installer() {
@@ -455,11 +469,131 @@ public final class MainHook extends XposedModule {
         return hidden;
     }
 
+    // ------------------------------------------------------- 推送通知广告闸门
+
+    /**
+     * 推送通知广告闸门：挂 {@code NotificationManager}。
+     *
+     * <p>选这个点的原因：{@code notify(...)} 是<b>滴滴进程内所有通知的唯一出口</b>——厂商推送
+     * 通道、自建长连接、轮询、AlarmManager 拉回来的广告，最终都要调它；而且它是平台类，
+     * 不参与 R8 混淆，所以滴滴更新改的是自己的广告 SDK 名字，这里不受影响。
+     *
+     * <p>{@code createNotificationChannel} 用来在渠道注册那一刻就判定广告渠道：渠道 id/名/描述
+     * 创建后固定，是比文案更强的信号，而且只跑一次。它只观测不拦截（拦掉渠道创建会让 App
+     * 后续 notify 到不存在的渠道而抛异常，反而更糟）。
+     */
+    private void installPushNotify() {
+        int before = H.hooked();
+        hookNotify(false);
+        hookNotify(true);
+        hookChannel();
+        int got = H.hooked() - before;
+        if (got < PUSH_NOTIFY_ENTRIES) {
+            partialKey = "push_notify";
+            partialWhy = "只挂上 " + got + "/" + PUSH_NOTIFY_ENTRIES + " 个通知入口（notify 判定仍对已挂上的入口有效）";
+        }
+        // 没有真机广告通知时，用固定样本证明"判定函数本身"是对的，而不是只说"钩子装上了"。
+        String selfTest = NotifyGate.selfTest();
+        pushSelfTest = selfTest;
+        H.info(selfTest);
+        setDetail("push_notify", selfTest);
+    }
+
+    private static final int PUSH_NOTIFY_ENTRIES = 4;
+    /** 判定自检结论；拦到广告后刷新报告时也要带着它。 */
+    private volatile String pushSelfTest = "";
+
+    private void hookNotify(final boolean withTag) {
+        String id = withTag ? "push_notify_tagged" : "push_notify_plain";
+        try {
+            Method target = withTag
+                    ? NotificationManager.class.getDeclaredMethod("notify", String.class, int.class, Notification.class)
+                    : NotificationManager.class.getDeclaredMethod("notify", int.class, Notification.class);
+            hook(target).setId(id).intercept(new XposedInterface.Hooker() {
+                @Override public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                    // 判据全在 NotifyGate 里，任何异常它自己 fail-open 放行。
+                    NotifyGate.Decision decision = NotifyGate.evaluate(
+                            (Notification) chain.getArg(withTag ? 2 : 1),
+                            withTag ? (String) chain.getArg(0) : null);
+                    if (decision.suppress) {
+                        // 不调用 proceed() = 通知根本不下发；正常通知一条都不受影响。
+                        H.hit("push_notify", "suppress:" + decision.reason);
+                        H.row("push_notify", "matched",
+                                "已拦广告通知 " + NotifyGate.suppressed() + " 条 / 共见到 " + NotifyGate.scanned()
+                                        + " 条；广告渠道 " + NotifyGate.channelsAd() + "/" + NotifyGate.channelsSeen()
+                                        + "；" + pushSelfTest);
+                        return null;
+                    }
+                    return chain.proceed(); // 放行路径零日志、零分配
+                }
+            });
+            H.installed(id);
+        } catch (Throwable t) {
+            H.miss(id, t.getClass().getSimpleName());
+        }
+    }
+
+    private void hookChannel() {
+        try {
+            Method target = NotificationManager.class.getDeclaredMethod(
+                    "createNotificationChannel", NotificationChannel.class);
+            hook(target).setId("push_notify_channel").intercept(new XposedInterface.Hooker() {
+                @Override public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                    Object result = chain.proceed();
+                    try {
+                        NotifyGate.Decision d = NotifyGate.evaluateChannel((NotificationChannel) chain.getArg(0));
+                        if (d.suppress) H.hit("push_notify", "ad_channel:" + d.reason);
+                    } catch (Throwable ignored) {}
+                    return result;
+                }
+            });
+            H.installed("push_notify_channel");
+        } catch (Throwable t) {
+            H.miss("push_notify_channel", t.getClass().getSimpleName());
+        }
+        try {
+            Method target = NotificationManager.class.getDeclaredMethod(
+                    "createNotificationChannels", java.util.List.class);
+            hook(target).setId("push_notify_channels").intercept(new XposedInterface.Hooker() {
+                @Override public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                    Object result = chain.proceed();
+                    try {
+                        Object arg = chain.getArg(0);
+                        if (arg instanceof java.util.List) {
+                            for (Object channel : (java.util.List<?>) arg) {
+                                NotifyGate.Decision d = NotifyGate.evaluateChannel((NotificationChannel) channel);
+                                if (d.suppress) H.hit("push_notify", "ad_channel:" + d.reason);
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                    return result;
+                }
+            });
+            H.installed("push_notify_channels");
+        } catch (Throwable t) {
+            H.miss("push_notify_channels", t.getClass().getSimpleName());
+        }
+    }
+
     private interface Installer { void install(); }
+
+    private void setPartial(String key, String why) {
+        partialKey = key;
+        partialWhy = why;
+    }
+
+    private void setDetail(String key, String extra) {
+        detailKey = key;
+        detailExtra = extra;
+    }
 
     private void feature(String key, SharedPreferences prefs, Installer installer) {
         boolean enabled = Config.read(prefs, key, Config.defaultOf(key));
         int before = H.hooked();
+        partialKey = null;
+        partialWhy = null;
+        detailKey = null;
+        detailExtra = null;
         if (!enabled) {
             H.info("feature=" + key + " result=off");
             H.report("running", key, "off", "开关已关闭");
@@ -481,10 +615,17 @@ public final class MainHook extends XposedModule {
             H.warn("feature=" + key + " result=miss reason=no anchor");
             H.report("running", key, "miss", "锚点未找到");
             H.row(key, "miss", "这个版本找不到锚点，已自动跳过");
+        } else if (key.equals(partialKey)) {
+            // 只覆盖部分入口：必须单独报出原因，不能算成"成功"。
+            H.warn("feature=" + key + " result=partial hooks=" + hooked + " reason=" + partialWhy);
+            H.report("running", key, "partial", partialWhy);
+            H.row(key, "partial", partialWhy);
         } else {
+            String detail = "已装 " + hooked + " 条钩子";
+            if (key.equals(detailKey) && detailExtra != null) detail += "；" + detailExtra;
             H.info("feature=" + key + " result=matched hooks=" + hooked);
-            H.report("running", key, "matched", "已装 " + hooked + " 条");
-            H.row(key, "matched", "已装 " + hooked + " 条钩子");
+            H.report("running", key, "matched", detail);
+            H.row(key, "matched", detail);
         }
     }
 

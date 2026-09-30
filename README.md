@@ -15,6 +15,7 @@
 | 全局 | 广告总闸 | 全局 · 所有广告位 | `AdSdk.d(AdRequest)` 恒返回 false → 广告 SDK 置为“未就绪”，广告展示路径自然退出 |
 | 广告拦截 | 广告弹窗 · 通知 | 任意页 · 弹窗浮层 / 通知 | 拦截 `PopRequest` / `NotifyRequest`（**只拦广告弹窗，正常弹窗不拦**） |
 | 广告拦截 | 开屏广告 | 启动页 · 冷启动开屏 | 不运行开屏展示流程、不接受开屏资源 |
+| 广告拦截 | 推送通知广告 | 通知栏 · 推送下发的广告通知 | 拦 `NotificationManager.notify` 这个**所有通知的唯一出口**：先判通知渠道 id/名，再判标题与正文里的广告词。命中的广告通知**根本不下发**；行程 / 接单 / 送达等正常通知原样保留 |
 | 广告拦截 | ⚠ 通用弹窗全拦（**默认关**） | 任意页 · DiDi 自有弹窗 | 拦截 `com.didi.sdk.view.dialog.b.show()`。**开了会连正常提示一起拦**，默认关闭 |
 | 首页界面 | 首页营销卡片 / 营销横幅 | 首页 · 顶部智能卡片 | 隐藏 `v8_smart_card_container` 等 |
 | 首页界面 | 首页底部营销专区 | 首页 · 最下方推广区 | 隐藏 `banner_parent_container` / `card_layout` 等 |
@@ -28,6 +29,28 @@
 
 设置页还有两个按钮：**强制停止滴滴（立即生效）**、**恢复默认**。
 
+## 推送通知广告闸门（push_notify）
+
+挂在 `android.app.NotificationManager` 上，四个入口：`notify(int,Notification)`、`notify(String,int,Notification)`、`createNotificationChannel(NotificationChannel)`、`createNotificationChannels(List)`。
+
+**为什么挂这里**：`notify(...)` 是滴滴进程内所有通知的**唯一出口**——厂商推送通道、自建长连接、轮询、AlarmManager 拉回来的广告最终都要调它；而且它是**平台类、不参与 R8 混淆**，滴滴更新改的是自己的广告 SDK 名字，这里不受影响。挂平台类还意味着换版本不会失效，判据表可跨版本复用。
+
+**判定顺序**（先便宜后昂贵，命中即停）：
+
+1. 渠道 id —— 一次 `indexOf`，广告常自带 `*_ad / *_promo` 这类渠道；
+2. 渠道名 / 描述 —— 渠道创建后固定，是强信号；
+3. 标题 / 正文 / 长文 / 副标题 / 附加文本 / 滚动文本 / tag —— 广告文案关键词。
+
+**只拦广告**：词表刻意避开行程类正常通知用词（行程 / 司机 / 派单 / 接驾 / 送达 / 取消）。任何异常一律 fail-open 放行，行为与没装模块完全一致。
+
+**性能**：`notify` 是低频事件（按小时计），不是 `onDraw` 那种热路径。拦截体内只做 `String.indexOf` 和取已有对象，零反射、零分配（`String.toString()` 返回 `this`）、零逐条日志；放行路径直接 `proceed()`。
+
+**判据表可改**：在 `app/src/io/github/didiadclean/NotifyGate.java` 的 `CHANNEL_TOKENS` / `CHANNEL_NAME_TOKENS` / `TEXT_TOKENS` 里改，改完强停滴滴生效。词表是通用广告词，遇到拦不准的通知就往里加词。
+
+**可观测**：设置页「适配诊断」里这一项会显示 `已装 4 条钩子；self_test 7/7 passed`。`self_test` 是安装时用固定样本跑一遍判定函数的结论（正样本应当拦、行程类负样本应当放），用来证明**判定逻辑本身**是对的；真正拦到广告后，这一行会变成 `已拦广告通知 N 条 / 共见到 M 条；广告渠道 A/B`。
+
+**`createNotificationChannel` 只观测不拦截**：把渠道拦掉会让后续 `notify` 抛异常，反而更糟。
+
 ## 版本兼容机制
 
 1. **类名锚点 + 形状匹配**：不写死混淆方法名（滴滴各版本 R8 名字不同，例如首页 Fragment 的“创建视图”方法 8.0.13 叫 `Ud`、8.0.2 叫 `Ad`），统一按 `(LayoutInflater, ViewGroup[, Bundle]) → View` 这类形状找。
@@ -40,11 +63,16 @@
 纯命令行，无需 Android Studio（`javac → d8 → aapt2 → zipalign → apksigner`）：
 
 ```powershell
-$env:JAVA_HOME='<jdk17>'
 powershell -File app\build.ps1          # 产物：app\dist\didi-adclean-v0.6.0.apk
 ```
 
-需要 ANDROID SDK（`build-tools;35.0.0` + `platforms;android-35`）与 JDK 17。`app/debug.keystore` 是本地测试签名，仓库里不含；首次构建会自动生成。
+需要 JDK 17 与 Android SDK。工具链**自动探测**，不再写死某台机器的路径：SDK 依次找 `DAC_SDK` → `ANDROID_SDK` → `ANDROID_HOME` → `ANDROID_SDK_ROOT` → 仓库同级的 `.android_build_tools\android-sdk` → `C:\Android\Sdk` → `%LOCALAPPDATA%\Android\Sdk`；JDK 找 `DAC_JDK` → `JAVA_HOME` → 同级 `.android_build_tools\jdk17` → AdoptOpenJDK。platform 与 build-tools 取该 SDK 下**实际可用的最高版本**，不再钉死 android-35 / build-tools 35.0.0。
+
+D8 单独解析：优先 `R8_JAR` 环境变量，其次 `<SDK>\d8\r8-*.jar`，最后才用 SDK 自带 `d8.jar`。两个原因：不带自己 `d8.jar` 的 build-tools 安装会让 `d8.bat` 退化成看不懂的 `ClassNotFoundException`；旧 build-tools 自带的 R8 3.3.20 在 dexing 本项目时会抛 `Cannot invoke String.length() because <parameter1> is null`。本仓库在 Android SDK `platforms;android-34` + `build-tools;34.0.0` + R8 9.4.27 上构建通过。
+
+另外：工作区路径含中文时，`Get-ChildItem -Filter '*.java'` 在 PowerShell 5.1 上会**偶发返回 0 个文件**（曾表现为静默跳过所有源码），所以脚本统一用 `Get-FilesByExtension` 按扩展名过滤，不使用 `-Filter`。
+
+`app/debug.keystore` 是本地测试签名，仓库里不含；首次构建会自动生成。
 
 ## 安装
 
@@ -54,13 +82,27 @@ adb install -r app/dist/didi-adclean-v0.6.0.apk
 adb shell am force-stop com.sdu.didi.psnger     # 或在设置页点“强制停止滴滴”
 ```
 
-## 日志
+## 日志与状态
+
+**首选：设置页的「适配诊断」**（逐项显示 `matched / partial / miss / off` + 原因 + 命中数），这是跨版本最稳的通道。
+
+也可以直接读模块进程落盘的报告（设置页读的就是它）：
 
 ```bash
-adb shell "logcat -d" | grep DiDiAdClean        # 模块日志（tag 实际为 LSPosedFramework，模块名在方括号里）
-adb shell su -c "grep -a didiadclean /data/adb/lspd/log/modules_*.log | tail -50"
+adb shell su -c "cat /data/data/io.github.didiadclean/shared_prefs/compat_reports.xml"
 ```
-关键行：`event=install_summary hooked=23 miss=0`、`event=compat_scan ok=13/13 missing=[]`、逐条 `hit=<类.方法>`。
+
+关注 `rows` 里 `push_notify` 那一行，形如
+`push_notify<TAB>matched<TAB>0<TAB>已装 4 条钩子；self_test 7/7 passed`。
+
+**注意：在 Vector（`zygisk_vector`）上模块日志不进 logcat。** 实测 `logcat -d | grep DiDiAdClean` 什么都搜不到，
+框架和模块日志都被 Vector 写进 `/data/adb/lspd/log/` 自己的文件。查加载情况用：
+
+```bash
+adb shell su -c "grep -a didiadclean /data/adb/lspd/log/modules_*.log | tail -20"
+```
+
+经典 LSPosed（`LSPosedFramework` tag）上 `logcat` 那条路才有效。
 
 ## 已知限制
 
