@@ -55,7 +55,7 @@ public final class MainHook extends XposedModule {
         try { pkg = param.getPackageName(); } catch (Throwable ignored) {}
         if (!Config.PACKAGE.equals(pkg)) return;
         String process = processName;
-        if (process != null && !Config.PACKAGE.equals(process)) return;
+        if (!inScopeProcess(process)) return;
         if (!installed.compareAndSet(false, true)) return;
         try {
             ClassLoader loader = param.getClassLoader();
@@ -70,6 +70,22 @@ public final class MainHook extends XposedModule {
             try { log(Log.ERROR, Config.TAG, "[schema=" + Config.REPORT_SCHEMA + "] setup failed", t); } catch (Throwable ignored) {}
             H.summary();
         }
+    }
+
+    /**
+     * 哪些进程要装钩子。
+     *
+     * <p>8.x 把界面放在主进程 {@code com.sdu.didi.psnger}，但 6.x 把整个界面都挂在
+     * {@code :privacy} 子进程上（{@code LauncherActivity} 的 {@code android:process}
+     * 就是它，主进程根本不启动）。只认主进程的话，6.x 上模块一次都不会加载。
+     *
+     * <p>所以放行主进程 + 全部子进程。通知下发本身就可能发生在任一子进程，
+     * 推送通知闸门必须装到。代价是子进程也会装一套钩子——但拦截体都有开关前置判断，
+     * 且老版本才有的子进程在新版本上并不常驻。
+     */
+    private static boolean inScopeProcess(String process) {
+        if (process == null) return true;   // 框架没给进程名时按主进程处理
+        return process.equals(Config.PACKAGE) || process.startsWith(Config.PACKAGE + ":");
     }
 
     private static String safePackage(XposedModuleInterface.PackageReadyParam param) {
@@ -241,6 +257,7 @@ public final class MainHook extends XposedModule {
                 android.content.pm.PackageInfo info =
                         context.getPackageManager().getPackageInfo(Config.PACKAGE, 0);
                 long code = info.getLongVersionCode();
+                Config.observedVersionCode = code;
                 if (Config.isVerified(code)) {
                     H.setCompat(true, "已验证版本 " + info.versionName + "(" + code + ")："
                             + "覆盖 " + Config.VERIFIED_MIN + "~" + Config.VERIFIED_MAX + "，跳过锚点扫描");
@@ -526,6 +543,14 @@ public final class MainHook extends XposedModule {
         pushSelfTest = selfTest;
         H.info(selfTest);
         setDetail("push_notify", selfTest);
+        // 通知闸门的适配范围比整模块宽得多：它只挂平台类 NotificationManager，
+        // 不受 App 改混淆名影响。在宽区间里就明说，让用户知道这一项在老版本上照样有效。
+        if (Config.isPushVerified(Config.observedVersionCode)) {
+            setDetail("push_notify", "本版本落在已实测区间 "
+                    + Config.PUSH_VERIFIED_MIN + "~" + Config.PUSH_VERIFIED_MAX
+                    + " 内（整模块区间是 " + Config.VERIFIED_MIN + "~" + Config.VERIFIED_MAX
+                    + "）；" + selfTest);
+        }
     }
 
     private static final int PUSH_NOTIFY_ENTRIES = 4;
