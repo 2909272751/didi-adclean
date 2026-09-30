@@ -18,6 +18,27 @@ public final class Config {
     public static final String ACTION_COMPAT = "io.github.didiadclean.COMPAT_REPORT";
     public static final String COMPAT_FILE = "compat_reports";
 
+    /**
+     * 已实测通过的滴滴 versionCode <b>区间</b>。
+     *
+     * <p>8.0.11(1208001102)、8.0.12(1208001204)、8.0.13(1208001301)、8.0.14(1208001404)
+     * 四个点逐个真机装包 → 冷启动 → 读模块落盘报告，全部通过（push_notify 4/4 入口、
+     * self_test 7/7、锚点 13/13）。区间内每两个实测点之间没有再插点测试，
+     * 按二分法的前提——端点与中间点都通过，则其间版本同样适配——整段标记为可用。
+     *
+     * <p>命中即跳过注入时的锚点扫描：钩子照常安装，只是不再每次启动都重扫一遍，
+     * 也不再让设置页显示成「待适配」。
+     *
+     * <p>区间外（新版本或老版本）照旧走扫描 + 逐项 fail-open 跳过，
+     * 白名单不会挡住它们。实测到新版本后，把区间上界抬到新的 versionCode 即可。
+     */
+    public static final long VERIFIED_MIN = 1208001102L; // 8.0.11
+    public static final long VERIFIED_MAX = 1208001404L; // 8.0.14
+
+    public static boolean isVerified(long versionCode) {
+        return versionCode >= VERIFIED_MIN && versionCode <= VERIFIED_MAX;
+    }
+
     // ── 分类（设置页按此分组显示）──────────────────────────────────────────
     public static final String[] CATEGORIES = {"global", "ad", "home", "diagnostic"};
     public static final String[] CATEGORY_TITLES = {"全局", "广告拦截", "首页界面", "诊断与恢复"};

@@ -63,7 +63,8 @@ public final class MainHook extends XposedModule {
             logFrameworkInfo();
             install(loader);
             H.summary();
-            compatScan(loader);
+            // 锚点扫描推迟到拿到 Context、知道宿主版本号之后再做：
+            // 已实测通过的版本直接跳过，不做这次重复劳动（见 Config.VERIFIED_VERSIONS）。
             installContextHook(loader);
         } catch (Throwable t) {
             try { log(Log.ERROR, Config.TAG, "[schema=" + Config.REPORT_SCHEMA + "] setup failed", t); } catch (Throwable ignored) {}
@@ -111,6 +112,7 @@ public final class MainHook extends XposedModule {
                             Application application = (Application) chain.getThisObject();
                             H.attachContext(application != null ? application : context);
                             H.info("context captured: " + (context != null));
+                            maybeCompatScan(context, loader);
                             H.detectVersion(loader);
                         } catch (Throwable t) {
                             H.warn("context capture failed: " + t);
@@ -226,6 +228,33 @@ public final class MainHook extends XposedModule {
      * 版本兼容自检：逐个探测锚点是否还在（换版本后 R8 会改方法名/类名）。
      * 结果写日志一行 + 上报设置页（"版本兼容自检：ok/总数"）；缺失项自动跳过，不影响其它功能。
      */
+    /**
+     * 拿到 Context 后才知道宿主版本号，这时才决定要不要扫锚点。
+     *
+     * <p>落在 {@link Config#VERIFIED_MIN}~{@link Config#VERIFIED_MAX} 已实测区间内就整段跳过扫描：
+     * 钩子已经装完了，再扫一遍既重复、又让人误以为这个版本还没适配。
+     * 区间外或查不到版本号时照旧扫描，不猜。
+     */
+    private void maybeCompatScan(Context context, ClassLoader loader) {
+        try {
+            if (context != null) {
+                android.content.pm.PackageInfo info =
+                        context.getPackageManager().getPackageInfo(Config.PACKAGE, 0);
+                long code = info.getLongVersionCode();
+                if (Config.isVerified(code)) {
+                    H.setCompat(true, "已验证版本 " + info.versionName + "(" + code + ")："
+                            + "覆盖 " + Config.VERIFIED_MIN + "~" + Config.VERIFIED_MAX + "，跳过锚点扫描");
+                    H.info("event=compat_scan skipped=1 verified=" + code);
+                    return;
+                }
+                H.info("event=compat_scan unverified=" + code + " -> scanning anchors");
+            }
+        } catch (Throwable t) {
+            H.warn("verified-version lookup failed, scanning anyway: " + t);
+        }
+        compatScan(loader);
+    }
+
     private void compatScan(ClassLoader loader) {
         int ok = 0;
         StringBuilder missing = new StringBuilder();
