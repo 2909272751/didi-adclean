@@ -12,6 +12,7 @@ import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -154,6 +155,13 @@ public final class MainHook extends XposedModule {
         final Class<?> adSdk = R.load(loader, "com.didi.ad.AdSdk");
         final Class<?> splashShow = R.load(loader, "com.didi.ad.splash.QuickSplashShow");
         final SharedPreferences prefsRef = prefs;
+        // 7.0 及更早首页 Fragment/容器改成了短名，这里先各解析一次，后面几项共用。
+        final String[] homeFragments = resolveHomeFragments(loader, HOME_FRAGMENTS);
+        final String[] homeContainers = resolveHomeContainers(loader, HOME_CONTAINERS);
+        if (homeFragments.length != HOME_FRAGMENTS.length)
+            H.info("home fragments resolved: " + java.util.Arrays.toString(homeFragments));
+        if (homeContainers.length != HOME_CONTAINERS.length)
+            H.info("home containers resolved: " + java.util.Arrays.toString(homeContainers));
 
         feature("no_ads", prefsRef, new Installer() {
             @Override public void install() {
@@ -198,13 +206,13 @@ public final class MainHook extends XposedModule {
         // ── 兜底：首页 Fragment 视图创建后，延迟再隐藏一遍（广告/营销位是数据到达后才挂上去的）──
         feature("hide_promo_card", prefsRef, new Installer() {
             @Override public void install() {
-                installHideDeferred(loader, HOME_FRAGMENTS, "hide_promo_card",
+                installHideDeferred(loader, homeFragments, "hide_promo_card",
                         new String[]{"v8_smart_card_container", "home_main_card_activity_image"});
             }
         });
         feature("hide_home_banner", prefsRef, new Installer() {
             @Override public void install() {
-                installHideDeferred(loader, HOME_FRAGMENTS, "hide_home_banner",
+                installHideDeferred(loader, homeFragments, "hide_home_banner",
                         new String[]{"home_banner_proxy_view", "ch_banner_casper_container",
                                 "banner_parent_container", "banner_main_title",
                                 "ch_home_banner_big_image_view", "ch_home_banner_vertical_small_image_view_v1",
@@ -213,7 +221,7 @@ public final class MainHook extends XposedModule {
         });
         feature("hide_bottom_nav", prefsRef, new Installer() {
             @Override public void install() {
-                installHideDeferred(loader, HOME_CONTAINERS, "hide_bottom_nav",
+                installHideDeferred(loader, homeContainers, "hide_bottom_nav",
                         new String[]{"v6x_home_bottom_nav", "v6x_home_bottom", "v6x_home_bottom_blur", "shadow_view"});
             }
         });
@@ -224,18 +232,18 @@ public final class MainHook extends XposedModule {
         });
         feature("hide_top_tabs", prefsRef, new Installer() {
             @Override public void install() {
-                installHideDeferred(loader, HOME_CONTAINERS, "hide_top_tabs", new String[]{"tabLayout"});
+                installHideDeferred(loader, homeContainers, "hide_top_tabs", new String[]{"tabLayout"});
             }
         });
         feature("hide_top_tools", prefsRef, new Installer() {
             @Override public void install() {
-                installHideDeferred(loader, HOME_CONTAINERS, "hide_top_tools",
+                installHideDeferred(loader, homeContainers, "hide_top_tools",
                         new String[]{"home_v8x_action_bar_riding_container", "riding_code", "scan", "ch_v8_scan_img"});
             }
         });
         feature("hide_scene_row", prefsRef, new Installer() {
             @Override public void install() {
-                installHideDeferred(loader, HOME_FRAGMENTS, "hide_scene_row", new String[]{"ch_scene_layout"});
+                installHideDeferred(loader, homeFragments, "hide_scene_row", new String[]{"ch_scene_layout"});
             }
         });
     }
@@ -329,6 +337,29 @@ public final class MainHook extends XposedModule {
             "com.didi.carhailing.framework.v8.home.V8HomeFragment",
             "com.didi.carhailing.framework.v8.home.V8xHomeFragment",
     };
+    /**
+     * 首页 Fragment 所在包。7.0 及更早是 {@code v6x}（且 Fragment 本体被 R8 改成短名，
+     * 见 {@link #resolveHomeFragments}），8.x 才迁到 {@code v8}。
+     */
+    private static final String[] HOME_FRAGMENT_PREFIXES = {
+            "com.didi.carhailing.framework.v8.home.",
+            "com.didi.carhailing.framework.v6x.home.",
+            "com.didi.carhailing.framework.v7.home.",
+            "com.didi.carhailing.framework.v6.home.",
+            "com.didi.carhailing.framework.home.",
+    };
+    /**
+     * 首页容器（底栏 / 顶部 tab / 顶部工具）所在包。7.0 及更早 {@code HomeContainer} 也不见了，
+     * 被压成 {@code common/app/a|b|c|d|e}，所以同样要走短名单发现。
+     */
+    private static final String[] HOME_CONTAINER_PREFIXES = {
+            "com.didi.carhailing.framework.v8.home.",
+            "com.didi.carhailing.framework.v6x.home.",
+            "com.didi.carhailing.framework.common.app.",
+            "com.didi.carhailing.framework.v7.home.",
+            "com.didi.carhailing.framework.v6.home.",
+            "com.didi.carhailing.framework.home.",
+    };
     private static final String[] HOME_CONTAINERS = {
             "com.didi.carhailing.framework.v8.home.V8xHomeContainerFragment",
             "com.didi.carhailing.framework.common.app.HomeContainer",
@@ -402,21 +433,114 @@ public final class MainHook extends XposedModule {
         }
     }
 
+    /**
+     * 首页 Fragment 的具名列表 {@link #HOME_FRAGMENTS} 只在 8.x 有效。
+     *
+     * <p>7.0 及更早滴滴把首页整包搬到了 {@code framework.v6x.home}，而且 R8 把 Fragment
+     * 本体改成了 {@code v6x/home/a|b|c|d} 这种短名——具名列表一个都命中不了，于是
+     * hide_promo_card / hide_home_banner / hide_top_tabs / hide_top_tools 全部报 miss。
+     *
+     * <p>所以加一层有界发现：只扫已知的 home 包前缀 × R8 常见的短名单（{@code a~z}、
+     * {@code a0~z0}），命中条件是「Fragment 子类 + 声明了 {@code onCreateView} 那种形状
+     * 的方法」。这是有界的：前缀个数 × 52 次 {@code loadClass}，不枚举整个 dex
+     * （滴滴 APK 近 100 MB，枚举会把启动卡住）。
+     *
+     * <p>只在具名列表一个都没命中时才扫，且按 versionCode 缓存结果——
+     * 同一版本只付一次代价，之后启动直接读缓存。
+     *
+     * @return 首页 Fragment 类名；具名或扫描都没找到时返回空数组（调用方按原样报 miss）
+     */
+    private static String[] resolveHomeFragments(ClassLoader loader, String[] named) {
+        return resolveByShape(loader, named, HOME_FRAGMENT_PREFIXES, true, "fragment");
+    }
+
+    private static String[] resolveHomeContainers(ClassLoader loader, String[] named) {
+        // 容器不要求是 Fragment：HomeContainer 这类自定义 ViewGroup 不继承 Fragment，
+        // 但只要它声明了"用 LayoutInflater 造 View 树"的方法就说明它负责搭首页。
+        // 误命中的后果只是在一个没人用的方法上挂钩子，hideIds 找不到控件就什么都不做。
+        return resolveByShape(loader, named, HOME_CONTAINER_PREFIXES, false, "container");
+    }
+
+    private static String[] resolveByShape(ClassLoader loader, String[] named, String[] prefixes, boolean requireFragment, String tag) {
+        ArrayList<String> hits = new ArrayList<>();
+        for (String className : named) {
+            if (R.load(loader, className) != null) hits.add(className);
+        }
+        if (!hits.isEmpty()) { H.setDiscovery(tag + ": 具名直接命中 " + hits); return hits.toArray(new String[0]); }
+        Class<?> fragment = requireFragment ? fragmentClass(loader) : Object.class;
+        StringBuilder trace = new StringBuilder(tag).append(": 具名全未命中；")
+                .append(requireFragment ? "Fragment 基类=" : "不要求 Fragment；");
+        if (requireFragment) trace.append(fragment == null ? "加载不到" : fragment.getName()).append("；");
+        if (fragment == null) { H.setDiscovery(trace.toString()); return new String[0]; }
+        for (String prefix : prefixes) {
+            int loaded = 0, shaped = 0;
+            for (int i = 0; i < 52; i++) {
+                String simple = i < 26
+                        ? String.valueOf((char) ('a' + i))
+                        : (char) ('a' + i - 26) + "0";
+                Class<?> candidate;
+                try { candidate = loader.loadClass(prefix + simple); } catch (Throwable ignored) { continue; }
+                loaded++;
+                if (requireFragment && !fragment.isAssignableFrom(candidate)) continue;
+                if (findCreateView(candidate, null) == null) continue;
+                shaped++;
+                hits.add(prefix + simple);
+            }
+            if (loaded > 0) trace.append(prefix).append(" 载到 ").append(loaded).append('/').append(shaped).append("；");
+        }
+        H.setDiscovery(trace.toString());
+        return hits.toArray(new String[0]);
+    }
+
+    /**
+     * androidx 与 platform 两套 Fragment 都要认，老滴滴用的是 platform 那套。
+     *
+     * <p>必须用宿主的 targetLoader 查，不能用 {@code Class.forName}——那走的是模块自己
+     * 的定义 ClassLoader，看不到宿主 APK 里的 androidx 类。
+     */
+    private static Class<?> fragmentClass(ClassLoader loader) {
+        for (String name : new String[]{
+                "androidx.fragment.app.Fragment",
+                "android.support.v4.app.Fragment",
+                "android.app.Fragment"}) {
+            try { return loader.loadClass(name); } catch (Throwable ignored) { }
+        }
+        return null;
+    }
+
+    /**
+     * 找"用 LayoutInflater 造 View 树"的方法（{@code onCreateView} 那种形状）。
+     *
+     * <p>必须沿继承链往上找：R8 常把 {@code onCreateView} 留在 {@code BaseXxxFragment} 基类上，
+     * 具体 Fragment 继承但不重写。只看 {@code getDeclaredMethods()} 的话，7.0 上那些
+     * {@code v6x/home/a|b|c|d} 一个都认不出来。
+     *
+     * @param methodHint 指定方法名；非 null 时只认这个名字，否则取形状匹配的第一个
+     * @return 命中的是「声明它的那个类」上的方法——直接 hook 它就能覆盖所有子类
+     */
+    private static Method findCreateView(Class<?> owner, String methodHint) {
+        for (Class<?> c = owner; c != null && c != Object.class; c = c.getSuperclass()) {
+            Method first = null;
+            for (Method m : c.getDeclaredMethods()) {
+                Class<?>[] p = m.getParameterTypes();
+                if (p.length < 2 || p.length > 3) continue;
+                if (!android.view.View.class.isAssignableFrom(m.getReturnType())) continue;
+                if (!android.view.LayoutInflater.class.isAssignableFrom(p[0])) continue;
+                if (!android.view.ViewGroup.class.isAssignableFrom(p[1])) continue;
+                if (methodHint != null && m.getName().equals(methodHint)) return m;
+                if (first == null) first = m;
+            }
+            if (first != null) return first;
+        }
+        return null;
+    }
+
     /** 通用"界面简化"闸门：按**形状**找"创建视图"方法（名字跨版本会变）。 */
     private void installHide(ClassLoader loader, String className, String methodHint, final String feature,
                              final String[] idNames, final boolean deferred) {
         Class<?> owner = R.load(loader, className);
         if (owner == null) { H.miss(className, "ClassNotFound"); return; }
-        Method target = null;
-        for (Method m : owner.getDeclaredMethods()) {
-            Class<?>[] p = m.getParameterTypes();
-            if (p.length < 2 || p.length > 3) continue;
-            if (!android.view.View.class.isAssignableFrom(m.getReturnType())) continue;
-            if (!android.view.LayoutInflater.class.isAssignableFrom(p[0])) continue;
-            if (!android.view.ViewGroup.class.isAssignableFrom(p[1])) continue;
-            if (methodHint != null && m.getName().equals(methodHint)) { target = m; break; }
-            if (target == null) target = m;
-        }
+        Method target = findCreateView(owner, methodHint);
         if (target == null) { H.miss(className + "." + methodHint, "NoShapeMatch"); return; }
         final String label = shortName(className) + "." + target.getName() + "(" + target.getParameterTypes().length + ")";
         try { target.setAccessible(true); } catch (Throwable ignored) {}
@@ -460,16 +584,7 @@ public final class MainHook extends XposedModule {
     private void installHide(ClassLoader loader, String className, String methodHint, final String feature, final String[] idNames) {
         Class<?> owner = R.load(loader, className);
         if (owner == null) { H.miss(className, "ClassNotFound"); return; }
-        Method target = null;
-        for (Method m : owner.getDeclaredMethods()) {
-            Class<?>[] p = m.getParameterTypes();
-            if (p.length < 2 || p.length > 3) continue;
-            if (!android.view.View.class.isAssignableFrom(m.getReturnType())) continue;
-            if (!android.view.LayoutInflater.class.isAssignableFrom(p[0])) continue;
-            if (!android.view.ViewGroup.class.isAssignableFrom(p[1])) continue;
-            if (methodHint != null && m.getName().equals(methodHint)) { target = m; break; }
-            if (target == null) target = m;
-        }
+        Method target = findCreateView(owner, methodHint);
         if (target == null) { H.miss(className + "." + methodHint, "NoShapeMatch"); return; }
         final String label = shortName(className) + "." + target.getName() + "(" + target.getParameterTypes().length + ")";
         try { target.setAccessible(true); } catch (Throwable ignored) {}

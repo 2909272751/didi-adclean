@@ -26,8 +26,9 @@ public final class Config {
      * 区间内每两个相邻实测点之间没有再插点测试——按二分法的前提（端点与中间点都通过，
      * 则其间版本同样适配）——整段标记为可用。
      *
-     * <p>下界为什么卡在 7.2.17：再往前一档实测 7.0.0(1207000001) 只有 2 项 matched、
-     * 7 项 miss，所以真正的分界在 7.1.x 区间内，本模块不声称覆盖 7.1 及更早。
+     * <p>下界为什么卡在 7.2.17：再往前一档实测 7.0.0(1207000001) 还有 3 项 miss
+     * （{@code no_ads} / {@code popup} / {@code splash}，整包广告 SDK 在 7.x 上是混淆的），
+     * 所以真正的分界在 7.1.x 区间内，本模块不声称覆盖 7.1 及更早。
      *
      * <p>命中即跳过注入时的锚点扫描：钩子照常安装，只是不再每次启动都重扫一遍。
      * 区间外照旧走扫描 + 逐项 fail-open 跳过。实测到新版本后抬 {@code VERIFIED_MAX} 即可。
@@ -36,14 +37,20 @@ public final class Config {
     public static final long VERIFIED_MAX = 1208001404L; // 8.0.14
 
     /**
-     * 推送通知闸门实测通过的 versionCode <b>区间</b>，比上面那个宽得多。
+     * 推送通知闸门 + 首页隐藏实测通过的 versionCode <b>区间</b>，比整模块那个宽得多。
      *
-     * <p>6.5.18(1206051804)、7.0.0(1207000001)、7.2.17、8.0.14 上 push_notify 都是
-     * 4/4 入口 + self_test 7/7。原因很直接：它只挂 {@code android.app.NotificationManager}
-     * 这个平台类，App 改混淆名不影响它。
+     * <p>6.5.18(1206051804)、7.0.0(1207000001)、7.2.17、8.0.14 上，这几项都是全的：
+     * <ul>
+     *   <li>通知闸门只挂 {@code android.app.NotificationManager} 这个<em>平台类</em>，
+     *       滴滴改混淆名不影响它，所以连 6.x 都是 4/4 入口、self_test 7/7；</li>
+     *   <li>首页那几项靠视图控件 ID，Fragment/容器改成短名也能被按形状发现出来
+     *       （见 {@code MainHook.resolveByShape}）。</li>
+     * </ul>
      *
-     * <p>这个区间只影响 push_notify 那一行的标注，<b>不会</b>让扫描被跳过——
-     * 6.x 上其他功能本来就找不到锚点，扫不扫都一样，fail-open 逐项跳过才是对的。
+     * <p>这个区间只影响这两类行的标注，<b>不会</b>让扫描被跳过——7.x 上
+     * {@code no_ads} / {@code popup} / {@code splash} 依赖的整个广告 SDK 是混淆的
+     * （{@code com.didi.ad.AdSdk} 变成了 {@code com.didi.ad.a}…{@code .g}），
+     * 找不到锚点，扫不扫都一样，fail-open 逐项跳过才是对的。
      */
     public static final long PUSH_VERIFIED_MIN = 1206051804L; // 6.5.18
     public static final long PUSH_VERIFIED_MAX = 1208001404L; // 8.0.14

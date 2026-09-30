@@ -38,6 +38,7 @@ public final class H {
     private static volatile String host = "未知";
     private static volatile String compatDetail = "";
     private static volatile boolean compatOk;
+    private static volatile String discoveryDetail = "";
 
     public static void bind(XposedModule m, Context context, String reportToken, long reportRun) {
         module = m;
@@ -60,6 +61,17 @@ public final class H {
         compatDetail = detail == null ? "" : detail;
     }
 
+    /**
+     * 记录"短名单发现"的扫描过程。
+     *
+     * <p>这类发现失败时不会崩、也不抛异常，光看"已自动跳过"完全猜不出是前缀不对、
+     * 还是 Fragment 类加载不到、还是方法形状没匹配上。把每一步的计数落到报告里，
+     * 出问题时能直接看出卡在哪一关，不用反复装机试。
+     */
+    public static void setDiscovery(String value) {
+        discoveryDetail = value == null ? "" : value;
+    }
+
     public static void detectVersion(ClassLoader loader) {
         Context context = appContext;
         if (context == null) return;
@@ -71,6 +83,9 @@ public final class H {
             report("start", "", "", "Host=" + host);
             if (compatDetail.length() > 0) {
                 report("compat", "compat", compatOk ? "matched" : "partial", compatDetail);
+            }
+            if (discoveryDetail.length() > 0) {
+                report("discovery", "discovery", "info", discoveryDetail);
             }
             sendRows();
         } catch (Throwable t) {
